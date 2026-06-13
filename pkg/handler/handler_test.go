@@ -21,6 +21,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -281,6 +282,29 @@ func TestServer(t *testing.T) {
 			run: func(t *testing.T) {
 				ssar := &authorizationv1.SelfSubjectAccessReview{}
 				if err := c.Create(ctx, ssar); err != nil {
+					t.Fatalf("failed to create self-subject access review: %v", err)
+				}
+				if !ssar.Status.Allowed {
+					t.Error("expected ssar to be allowed, wasn't the case")
+				}
+			},
+		},
+		{
+			// k9s/oc use protobuf by default. Verify the server handles protobuf requests and responses.
+			name: "Protobuf round-trip",
+			run: func(t *testing.T) {
+				protoCfg := &rest.Config{
+					Host: "http://127.0.0.1:8080",
+					ContentConfig: rest.ContentConfig{
+						ContentType: "application/vnd.kubernetes.protobuf",
+					},
+				}
+				k, err := kubernetes.NewForConfig(protoCfg)
+				if err != nil {
+					t.Fatalf("failed to construct clientset: %v", err)
+				}
+				ssar, err := k.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{}, metav1.CreateOptions{})
+				if err != nil {
 					t.Fatalf("failed to create self-subject access review: %v", err)
 				}
 				if !ssar.Status.Allowed {

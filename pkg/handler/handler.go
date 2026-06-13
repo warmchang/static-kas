@@ -22,6 +22,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/alvaroaleman/static-kas/pkg/discovery"
 	"github.com/alvaroaleman/static-kas/pkg/filter"
@@ -473,15 +476,40 @@ func findByName(l *unstructured.UnstructuredList, name string) *unstructured.Uns
 }
 
 func handleSSAR(l *zap.Logger, w http.ResponseWriter, r *http.Request) {
-	var ssar authorizationv1.SelfSubjectAccessReview
-	if err := json.NewDecoder(r.Body).Decode(&ssar); err != nil {
-		w.WriteHeader(400)
-		w.Write([]byte(fmt.Sprintf("failed to decode request body: %v", err)))
+	ssar, err := decodeRequest[authorizationv1.SelfSubjectAccessReview](r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	ssar.Status.Allowed = true
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(ssar); err != nil {
+	if err := encodeResponse(w, r, ssar, schema.GroupVersion{Group: "authorization.k8s.io", Version: "v1"}); err != nil {
 		l.Error("failed to encode response", zap.Error(err))
 	}
+}
+
+func decodeRequest[T any, PT interface {
+	*T
+	runtime.Object
+}](r *http.Request) (PT, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read request body: %w", err)
+	}
+	obj, _, err := scheme.Codecs.UniversalDeserializer().Decode(body, nil, PT(new(T)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode request body: %w", err)
+	}
+	return obj.(PT), nil
+}
+
+func encodeResponse(w http.ResponseWriter, r *http.Request, obj runtime.Object, gv schema.GroupVersion) error {
+	mediaTypes := scheme.Codecs.SupportedMediaTypes()
+	accept := r.Header.Get("Accept")
+	info, ok := runtime.SerializerInfoForMediaType(mediaTypes, accept)
+	if !ok {
+		info, _ = runtime.SerializerInfoForMediaType(mediaTypes, "application/json")
+	}
+	w.Header().Set("Content-Type", info.MediaType)
+	w.WriteHeader(http.StatusCreated)
+	return scheme.Codecs.EncoderForVersion(info.Serializer, gv).Encode(obj, w)
 }
